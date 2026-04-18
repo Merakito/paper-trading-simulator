@@ -26,14 +26,14 @@ def load_data():
             data = json.load(f)
             df = pd.DataFrame(data["portfolio"])
             
-            # --- THE BUG FIX ---
-            # If the loaded data is empty, rebuild the column headers!
+            # Rebuild columns if empty (The Bug Fix)
             if df.empty or "Ticker" not in df.columns:
                 df = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
                 
             return data["cash"], df
     else:
-        return 100000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
+        # CHANGED: Start with 1 Crore (10000000.00)
+        return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
 
 def save_data(cash, portfolio_df):
     data = {
@@ -52,12 +52,14 @@ with st.sidebar:
     st.header("⚙️ Account Settings")
     st.write("Use this to wipe your data and start fresh.")
     
+    # CHANGED: Button text to 1 Crore
     if st.button("🚨 Reset Account (₹1,00,00,000)"):
+        # CHANGED: Reset value to 1 Crore
         st.session_state.cash = 10000000.00
         st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
         save_data(st.session_state.cash, st.session_state.portfolio)
         st.cache_data.clear()
-        st.success("Account successfully reset!")
+        st.success("Account successfully reset to ₹1 Crore!")
         st.rerun()
 
 
@@ -97,7 +99,7 @@ st.divider()
 st.header("Trading Terminal")
 tab1, tab2 = st.tabs(["🟢 Buy", "🔴 Sell"])
 
-with tab1: # BUY LOGIC
+with tab1: 
     buy_ticker = st.text_input("Ticker to Buy (e.g., RELIANCE.NS, BTC-USD):", key="buy_ticker").upper()
     if buy_ticker:
         current_price = get_live_price(buy_ticker)
@@ -125,13 +127,10 @@ with tab1: # BUY LOGIC
                         st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_trade], ignore_index=True)
                     
                     save_data(st.session_state.cash, st.session_state.portfolio)
-                    
-                    # BUG FIX: Removed the line that caused the crash here!
-                    
                     st.success(f"Trade Executed! Bought {shares_to_buy} of {buy_ticker}.")
                     st.rerun()
 
-with tab2: # SELL LOGIC
+with tab2: 
     if not st.session_state.portfolio.empty:
         owned_tickers = st.session_state.portfolio['Ticker'].tolist()
         sell_ticker = st.selectbox("Ticker to Sell:", owned_tickers)
@@ -150,41 +149,4 @@ with tab2: # SELL LOGIC
             st.success(f"Current Market Price: **₹{current_price:,.2f}**")
             
             shares_to_sell = st.number_input(f"Amount to Sell", min_value=0.01, max_value=owned_shares, step=1.0)
-            proceeds = shares_to_sell * current_price
-            st.write(f"**Estimated Proceeds:** ₹{proceeds:,.2f}")
-            
-            if st.button("Execute Sell"):
-                st.session_state.cash += proceeds
-                avg_cost_per_share = total_invested / owned_shares
-                cost_of_sold_shares = avg_cost_per_share * shares_to_sell
-                
-                st.session_state.portfolio.at[idx, 'Shares'] -= shares_to_sell
-                st.session_state.portfolio.at[idx, 'Total Invested'] -= cost_of_sold_shares
-                
-                if st.session_state.portfolio.at[idx, 'Shares'] <= 0.0001:
-                    st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
-                
-                save_data(st.session_state.cash, st.session_state.portfolio)
-                st.success(f"Sold {shares_to_sell} of {sell_ticker}!")
-                st.rerun()
-    else:
-        st.info("You don't own any assets to sell yet.")
-
-st.divider()
-
-# --- 6. VIEW LIVE PORTFOLIO ---
-st.header("My Open Positions (Live)")
-if not live_portfolio.empty:
-    formatted_portfolio = live_portfolio.style.format({
-        "Shares": "{:.4f}",
-        "Total Invested": "₹{:,.2f}",
-        "Live Price": "₹{:,.2f}",
-        "Avg Buy Price": "₹{:,.2f}",
-        "Current Value": "₹{:,.2f}",
-        "Profit/Loss (₹)": "₹{:,.2f}",
-        "Profit/Loss (%)": "{:,.2f}%"
-    })
-    
-    st.dataframe(formatted_portfolio, use_container_width=True, hide_index=True)
-else:
-    st.info("Your portfolio is empty. Head to the Buy tab to make your first trade!")
+            proceeds = shares_to_sell *
