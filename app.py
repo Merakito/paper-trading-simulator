@@ -149,4 +149,41 @@ with tab2:
             st.success(f"Current Market Price: **₹{current_price:,.2f}**")
             
             shares_to_sell = st.number_input(f"Amount to Sell", min_value=0.01, max_value=owned_shares, step=1.0)
-            proceeds = shares_to_sell *
+            proceeds = shares_to_sell * current_price
+            st.write(f"**Estimated Proceeds:** ₹{proceeds:,.2f}")
+            
+            if st.button("Execute Sell"):
+                st.session_state.cash += proceeds
+                avg_cost_per_share = total_invested / owned_shares
+                cost_of_sold_shares = avg_cost_per_share * shares_to_sell
+                
+                st.session_state.portfolio.at[idx, 'Shares'] -= shares_to_sell
+                st.session_state.portfolio.at[idx, 'Total Invested'] -= cost_of_sold_shares
+                
+                if st.session_state.portfolio.at[idx, 'Shares'] <= 0.0001:
+                    st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
+                
+                save_data(st.session_state.cash, st.session_state.portfolio)
+                st.success(f"Sold {shares_to_sell} of {sell_ticker}!")
+                st.rerun()
+    else:
+        st.info("You don't own any assets to sell yet.")
+
+st.divider()
+
+# --- 6. VIEW LIVE PORTFOLIO ---
+st.header("My Open Positions (Live)")
+if not live_portfolio.empty:
+    formatted_portfolio = live_portfolio.style.format({
+        "Shares": "{:.4f}",
+        "Total Invested": "₹{:,.2f}",
+        "Live Price": "₹{:,.2f}",
+        "Avg Buy Price": "₹{:,.2f}",
+        "Current Value": "₹{:,.2f}",
+        "Profit/Loss (₹)": "₹{:,.2f}",
+        "Profit/Loss (%)": "{:,.2f}%"
+    })
+    
+    st.dataframe(formatted_portfolio, use_container_width=True, hide_index=True)
+else:
+    st.info("Your portfolio is empty. Head to the Buy tab to make your first trade!")
