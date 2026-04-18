@@ -24,7 +24,14 @@ def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
-            return data["cash"], pd.DataFrame(data["portfolio"])
+            df = pd.DataFrame(data["portfolio"])
+            
+            # --- THE BUG FIX ---
+            # If the loaded data is empty, rebuild the column headers!
+            if df.empty or "Ticker" not in df.columns:
+                df = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
+                
+            return data["cash"], df
     else:
         return 100000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
 
