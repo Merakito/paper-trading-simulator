@@ -5,6 +5,7 @@ import numpy as np
 import json
 import os
 import random
+import datetime # NEW: For timestamping history
 
 st.set_page_config(page_title="Paper Trader Pro", layout="wide")
 
@@ -27,16 +28,25 @@ def load_data():
             df = pd.DataFrame(data.get("portfolio", []))
             if df.empty or "Ticker" not in df.columns:
                 df = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-            opt_data = data.get("optimizer", {})
+            
+            # UPGRADED MEMORY: Handle the new list format
+            opt_data = data.get("optimizer", [])
+            # Backward compatibility for V8.0 single-save format
+            if isinstance(opt_data, dict) and opt_data:
+                opt_data["date"] = "Legacy Save"
+                opt_data = [opt_data]
+            elif isinstance(opt_data, dict) and not opt_data:
+                opt_data = []
+                
             return data.get("cash", 10000000.00), df, opt_data
     else:
-        return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"]), {}
+        return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"]), []
 
 def save_data(cash, portfolio_df, opt_data):
     data = {
         "cash": cash, 
         "portfolio": portfolio_df.to_dict("records"),
-        "optimizer": opt_data
+        "optimizer": opt_data # Now saving a list of history!
     }
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
@@ -60,7 +70,7 @@ with st.sidebar:
     if st.button("🚨 Reset Live Account (₹1 Crore)"):
         st.session_state.cash = 10000000.00
         st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-        st.session_state.optimizer = {}
+        st.session_state.optimizer = [] # Reset history to empty list
         save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
         st.cache_data.clear()
         st.success("Account reset to ₹1 Crore!")
@@ -244,54 +254,59 @@ elif app_mode == "🎮 Market Replay Academy":
 
 
 # ==========================================
-# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (UPDATED)
+# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (WITH HISTORY)
 # ==========================================
 elif app_mode == "⚖️ Portfolio Optimizer":
     st.title("⚖️ Mathematical Portfolio Optimizer")
-    st.write("Design your ideal portfolio. Enter any combination of assets below to find the perfect mathematical balance *before* you buy them.")
+    st.write("Design your ideal portfolio. Find the perfect mathematical balance *before* you buy.")
     
-    # NEW: Create a dynamic text input. Preload with owned tickers, or use a default example if empty.
+    # --- NEW: HISTORY VAULT UI ---
+    if st.session_state.optimizer:
+        with st.expander("📂 View Saved Simulation History", expanded=False):
+            # Create a dictionary to map a clean dropdown name to the actual data
+            history_dict = {}
+            for sim in reversed(st.session_state.optimizer): # Show newest first
+                date_str = sim.get('date', 'Unknown Date')
+                tickers_str = ", ".join(sim['weights'].keys())
+                display_name = f"{date_str} | Assets: {tickers_str}"
+                history_dict[display_name] = sim
+            
+            selected_history = st.selectbox("Select a past run to view results:", list(history_dict.keys()))
+            
+            if selected_history:
+                opt = history_dict[selected_history]
+                st.subheader("🎯 Saved Target Portfolio")
+                hc1, hc2 = st.columns(2)
+                hc1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
+                hc2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
+                
+                st.write("**Recommended Target Weights:**")
+                for t, w in opt['weights'].items():
+                    st.write(f"- {t}: {w*100:.2f}%")
+    
+    st.divider()
+    
+    # --- RUN NEW SIMULATION UI ---
+    st.header("🔬 Run New Simulation")
     owned_tickers = st.session_state.portfolio['Ticker'].tolist()
     default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, GOLD"
     
     user_input = st.text_input("Assets to Simulate (comma-separated):", value=default_str)
-    
-    # Clean up the input string into a valid list of tickers
     tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
     
     if len(tickers) < 2:
         st.warning("⚠️ You need at least 2 different assets to run an optimization simulation!")
     else:
-        # Check if we have saved data AND the saved data matches the exact tickers we are looking at right now
-        if st.session_state.optimizer:
-            saved_tickers = list(st.session_state.optimizer.get('weights', {}).keys())
-            # If the sorted lists match, we can show the saved data
-            if sorted(saved_tickers) == sorted(tickers):
-                st.info("💡 Showing your last saved simulation for these exact assets.")
-                opt = st.session_state.optimizer
-                
-                st.header("🎯 Your Optimal Portfolio Targets")
-                col1, col2 = st.columns(2)
-                col1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
-                col2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
-                
-                st.subheader("Recommended Target Weights:")
-                for t, w in opt['weights'].items():
-                    st.write(f"- **{t}**: {w*100:.2f}%")
-                st.divider()
-
-        if st.button("🚀 Run New Simulation (2,000 Portfolios)"):
+        if st.button("🚀 Run 2,000 Monte Carlo Simulations"):
             with st.spinner("Downloading 1 year of historical data and crunching the math..."):
                 try:
                     data = yf.download(tickers, period="1y", progress=False)['Close']
-                    
-                    # Handle case where user types a bad ticker and yfinance ignores it
                     valid_tickers = data.columns.tolist() if isinstance(data, pd.DataFrame) else []
+                    
                     if len(valid_tickers) < 2:
                         st.error("Not enough valid tickers found. Please check your spelling and try again.")
                     else:
                         daily_returns = data.pct_change().dropna()
-                        
                         ann_returns = daily_returns.mean() * 252
                         ann_cov = daily_returns.cov() * 252
                         
@@ -316,17 +331,23 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                         opt_return = results[1, max_sharpe_idx]
                         opt_risk = results[0, max_sharpe_idx]
                         
-                        # Save to memory
+                        # --- NEW: Append to History List ---
+                        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         weights_dict = {valid_tickers[i]: float(optimal_weights[i]) for i in range(len(valid_tickers))}
-                        st.session_state.optimizer = {
+                        
+                        new_sim_record = {
+                            "date": timestamp,
                             "return": float(opt_return),
                             "risk": float(opt_risk),
                             "weights": weights_dict
                         }
+                        
+                        st.session_state.optimizer.append(new_sim_record)
                         save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
                         
-                        st.success("Simulation Complete and Saved!")
+                        st.success("Simulation Complete and Saved to History Vault!")
                         
+                        # Draw the chart for the current run
                         chart_data = pd.DataFrame({
                             "Risk (Volatility)": results[0,:],
                             "Expected Return": results[1,:]
@@ -365,43 +386,4 @@ elif app_mode == "🔮 Cycle & Value Screener":
                     
                     delta = close.diff()
                     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                    rs = gain / loss
-                    rsi = 100 - (100 / (1 + rs))
-                    current_rsi = rsi.iloc[-1]
-                    
-                    sma_20 = close.rolling(window=20).mean()
-                    std_20 = close.rolling(window=20).std()
-                    lower_band = sma_20 - (2 * std_20)
-                    upper_band = sma_20 + (2 * std_20)
-                    
-                    c_lower = lower_band.iloc[-1]
-                    c_upper = upper_band.iloc[-1]
-                    c_sma = sma_20.iloc[-1]
-                    
-                    st.header(f"Analysis for {scan_ticker}")
-                    st.write(f"**Current Price:** ₹{current_price:,.2f}")
-                    st.divider()
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("Momentum (RSI 14)")
-                        st.metric("RSI Score (0-100)", f"{current_rsi:.1f}")
-                        if current_rsi < 30: st.success("🟢 Probability: OVERSOLD. Good buy zone.")
-                        elif current_rsi > 70: st.error("🔴 Probability: OVERBOUGHT. High risk buy zone.")
-                        else: st.info("🟡 Probability: NEUTRAL.")
-                            
-                    with col2:
-                        st.subheader("Mean Reversion (Bollinger)")
-                        st.write(f"**Average Price (20-day):** ₹{c_sma:,.2f}")
-                        if current_price <= c_lower * 1.02: st.success(f"🟢 Signal: AT CYCLE LOW (Floor: ₹{c_lower:,.2f}).")
-                        elif current_price >= c_upper * 0.98: st.error(f"🔴 Signal: AT CYCLE HIGH (Ceiling: ₹{c_upper:,.2f}).")
-                        else: st.info("🟡 Signal: MID-CYCLE.")
-                            
-                    st.divider()
-                    st.subheader("6-Month Price Action")
-                    st.line_chart(close)
-                else:
-                    st.error("No data found.")
-            except Exception as e:
-                st.error(f"Error calculating stats: {e}")
+                    loss = (-delta.where(delta < 0, 0)).rolling(window=14
