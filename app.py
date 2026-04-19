@@ -386,4 +386,43 @@ elif app_mode == "🔮 Cycle & Value Screener":
                     
                     delta = close.diff()
                     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(window=14
+                    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                    rs = gain / loss
+                    rsi = 100 - (100 / (1 + rs))
+                    current_rsi = rsi.iloc[-1]
+                    
+                    sma_20 = close.rolling(window=20).mean()
+                    std_20 = close.rolling(window=20).std()
+                    lower_band = sma_20 - (2 * std_20)
+                    upper_band = sma_20 + (2 * std_20)
+                    
+                    c_lower = lower_band.iloc[-1]
+                    c_upper = upper_band.iloc[-1]
+                    c_sma = sma_20.iloc[-1]
+                    
+                    st.header(f"Analysis for {scan_ticker}")
+                    st.write(f"**Current Price:** ₹{current_price:,.2f}")
+                    st.divider()
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.subheader("Momentum (RSI 14)")
+                        st.metric("RSI Score (0-100)", f"{current_rsi:.1f}")
+                        if current_rsi < 30: st.success("🟢 Probability: OVERSOLD. Good buy zone.")
+                        elif current_rsi > 70: st.error("🔴 Probability: OVERBOUGHT. High risk buy zone.")
+                        else: st.info("🟡 Probability: NEUTRAL.")
+                            
+                    with col2:
+                        st.subheader("Mean Reversion (Bollinger)")
+                        st.write(f"**Average Price (20-day):** ₹{c_sma:,.2f}")
+                        if current_price <= c_lower * 1.02: st.success(f"🟢 Signal: AT CYCLE LOW (Floor: ₹{c_lower:,.2f}).")
+                        elif current_price >= c_upper * 0.98: st.error(f"🔴 Signal: AT CYCLE HIGH (Ceiling: ₹{c_upper:,.2f}).")
+                        else: st.info("🟡 Signal: MID-CYCLE.")
+                            
+                    st.divider()
+                    st.subheader("6-Month Price Action")
+                    st.line_chart(close)
+                else:
+                    st.error("No data found.")
+            except Exception as e:
+                st.error(f"Error calculating stats: {e}")
