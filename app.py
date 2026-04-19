@@ -20,24 +20,32 @@ def get_live_price(ticker):
 
 DATA_FILE = "trading_data.json"
 
+# UPDATED: Now loads the optimizer history!
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             data = json.load(f)
-            df = pd.DataFrame(data["portfolio"])
+            df = pd.DataFrame(data.get("portfolio", []))
             if df.empty or "Ticker" not in df.columns:
                 df = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-            return data["cash"], df
+            opt_data = data.get("optimizer", {})
+            return data.get("cash", 10000000.00), df, opt_data
     else:
-        return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
+        return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"]), {}
 
-def save_data(cash, portfolio_df):
-    data = {"cash": cash, "portfolio": portfolio_df.to_dict("records")}
+# UPDATED: Now saves the optimizer history!
+def save_data(cash, portfolio_df, opt_data):
+    data = {
+        "cash": cash, 
+        "portfolio": portfolio_df.to_dict("records"),
+        "optimizer": opt_data
+    }
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
 if "cash" not in st.session_state:
-    st.session_state.cash, st.session_state.portfolio = load_data()
+    st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer = load_data()
+
 
 # --- 2. SIDEBAR NAVIGATION ---
 with st.sidebar:
@@ -49,7 +57,8 @@ with st.sidebar:
     if st.button("🚨 Reset Live Account (₹1 Crore)"):
         st.session_state.cash = 10000000.00
         st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-        save_data(st.session_state.cash, st.session_state.portfolio)
+        st.session_state.optimizer = {} # Reset the saved simulation too!
+        save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
         st.cache_data.clear()
         st.success("Account reset to ₹1 Crore!")
         st.rerun()
@@ -112,7 +121,7 @@ if app_mode == "📈 Live Trading":
                         else:
                             new_trade = pd.DataFrame([{"Ticker": buy_ticker, "Shares": shares_to_buy, "Total Invested": total_cost}])
                             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_trade], ignore_index=True)
-                        save_data(st.session_state.cash, st.session_state.portfolio)
+                        save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
                         st.success(f"Bought {shares_to_buy} of {buy_ticker}.")
                         st.rerun()
 
@@ -137,7 +146,7 @@ if app_mode == "📈 Live Trading":
                     st.session_state.portfolio.at[idx, 'Total Invested'] -= (avg_cost * shares_to_sell)
                     if st.session_state.portfolio.at[idx, 'Shares'] <= 0.0001:
                         st.session_state.portfolio = st.session_state.portfolio.drop(idx).reset_index(drop=True)
-                    save_data(st.session_state.cash, st.session_state.portfolio)
+                    save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
                     st.rerun()
                     
     st.divider()
@@ -153,76 +162,58 @@ if app_mode == "📈 Live Trading":
 # ==========================================
 # MODE 2: MARKET REPLAY ACADEMY
 # ==========================================
-# (Code remains the same as Version 4.0... omitted for brevity, keep your existing academy code here)
-
-
-# ==========================================
-# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER
-# ==========================================
-elif app_mode == "⚖️ Portfolio Optimizer":
-    st.title("⚖️ Mathematical Portfolio Optimizer")
-    st.write("This tool runs a Monte Carlo simulation on your currently owned assets to find the 'Efficient Frontier'. It calculates the mathematically perfect weight for each asset to maximize your risk-adjusted returns (Highest Sharpe Ratio).")
+elif app_mode == "🎮 Market Replay Academy":
+    st.title("🎮 Market Replay Academy")
+    st.write("Test your pattern recognition. I'll show you the past; you predict the future.")
     
-    tickers = st.session_state.portfolio['Ticker'].tolist()
-    
-    if len(tickers) < 2:
-        st.warning("⚠️ You need at least 2 different assets in your Live Portfolio to run the optimizer!")
-    else:
-        if st.button("🚀 Run 2,000 Monte Carlo Simulations"):
-            with st.spinner("Downloading 1 year of historical data and calculating covariance matrix..."):
-                try:
-                    # 1. Get historical data
-                    data = yf.download(tickers, period="1y", progress=False)['Close']
-                    # Calculate daily percentage returns
-                    daily_returns = data.pct_change().dropna()
-                    
-                    # 2. Calculate annualized returns and risk (252 trading days in a year)
-                    ann_returns = daily_returns.mean() * 252
-                    ann_cov = daily_returns.cov() * 252
-                    
-                    # 3. Setup Monte Carlo Simulation
-                    num_portfolios = 2000
-                    results = np.zeros((3, num_portfolios))
-                    weights_record = []
-                    
-                    for i in range(num_portfolios):
-                        # Generate random weights that add up to 1 (100%)
-                        weights = np.random.random(len(tickers))
-                        weights /= np.sum(weights)
-                        weights_record.append(weights)
-                        
-                        # Calculate expected portfolio return and risk (Standard Deviation)
-                        pref_return = np.sum(weights * ann_returns)
-                        pref_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
-                        
-                        # Store in results array
-                        results[0,i] = pref_std # Risk
-                        results[1,i] = pref_return # Return
-                        results[2,i] = results[1,i] / results[0,i] # Sharpe Ratio
-                    
-                    # 4. Find the optimal portfolio (Highest Sharpe Ratio)
-                    max_sharpe_idx = np.argmax(results[2])
-                    optimal_weights = weights_record[max_sharpe_idx]
-                    opt_return = results[1, max_sharpe_idx]
-                    opt_risk = results[0, max_sharpe_idx]
-                    
-                    st.success("Simulation Complete!")
-                    
-                    # 5. Display the Plot
-                    chart_data = pd.DataFrame({
-                        "Risk (Volatility)": results[0,:],
-                        "Expected Return": results[1,:]
-                    })
-                    st.scatter_chart(chart_data, x="Risk (Volatility)", y="Expected Return")
-                    
-                    # 6. Display the Optimal Weights
-                    st.header("🎯 The Mathematically Optimal Portfolio")
-                    st.write(f"**Expected Annual Return:** {opt_return*100:.2f}%")
-                    st.write(f"**Annual Volatility (Risk):** {opt_risk*100:.2f}%")
-                    
-                    st.subheader("Recommended Target Weights:")
-                    for idx, ticker in enumerate(tickers):
-                        st.metric(ticker, f"{optimal_weights[idx]*100:.2f}%")
-                        
-                except Exception as e:
-                    st.error(f"Could not calculate. Ensure you own valid tickers with enough historical data. Error: {e}")
+    if "game_step" not in st.session_state:
+        st.session_state.game_step = "generate" 
+        st.session_state.score = 0
+        st.session_state.streak = 0
+
+    def generate_scenario():
+        tickers = ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "RELIANCE.NS", "TATASTEEL.NS"]
+        ticker = random.choice(tickers)
+        year = random.randint(2018, 2023)
+        month = random.randint(1, 10)
+        start_date = f"{year}-{month:02d}-01"
+        end_date = f"{year}-{month+2:02d}-28"
+        
+        try:
+            hist = yf.Ticker(ticker).history(start=start_date, end=end_date)
+            if len(hist) > 50:
+                closes = hist['Close']
+                split = int(len(closes) * 0.7)
+                st.session_state.g_visible = closes.iloc[:split]
+                st.session_state.g_hidden = closes.iloc[split:]
+                st.session_state.g_full = closes
+                st.session_state.g_ticker = ticker
+                st.session_state.game_step = "guessing"
+            else:
+                generate_scenario()
+        except:
+            generate_scenario()
+
+    def check_guess(guess):
+        start_price = st.session_state.g_visible.iloc[-1]
+        end_price = st.session_state.g_hidden.iloc[-1]
+        went_up = end_price > start_price
+        
+        if (guess == "UP" and went_up) or (guess == "DOWN" and not went_up):
+            st.session_state.score += 500
+            st.session_state.streak += 1
+            st.session_state.g_result_msg = f"✅ **CORRECT!** The price went from {start_price:.2f} to {end_price:.2f}."
+        else:
+            st.session_state.score -= 250
+            st.session_state.streak = 0
+            st.session_state.g_result_msg = f"❌ **WRONG!** The price went from {start_price:.2f} to {end_price:.2f}. You got trapped!"
+        
+        st.session_state.game_step = "revealed"
+        st.rerun()
+
+    g_col1, g_col2 = st.columns(2)
+    g_col1.metric("Academy Score", st.session_state.score)
+    g_col2.metric("Winning Streak", f"{st.session_state.streak} 🔥")
+    st.divider()
+
+    if st.session_state.game_step == "generate":
