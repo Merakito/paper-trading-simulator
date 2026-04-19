@@ -217,3 +217,111 @@ elif app_mode == "🎮 Market Replay Academy":
     st.divider()
 
     if st.session_state.game_step == "generate":
+        with st.spinner("Finding a random historical setup..."):
+            generate_scenario()
+            st.rerun()
+
+    elif st.session_state.game_step == "guessing":
+        st.subheader("Asset: Hidden")
+        st.line_chart(st.session_state.g_visible)
+        
+        col_up, col_down = st.columns(2)
+        if col_up.button("📈 PREDICT: BREAKOUT (UP)", use_container_width=True): check_guess("UP")
+        if col_down.button("📉 PREDICT: CRASH (DOWN)", use_container_width=True): check_guess("DOWN")
+
+    elif st.session_state.game_step == "revealed":
+        st.subheader(f"Asset Revealed: {st.session_state.g_ticker}")
+        st.line_chart(st.session_state.g_full)
+        if "CORRECT" in st.session_state.g_result_msg: st.success(st.session_state.g_result_msg)
+        else: st.error(st.session_state.g_result_msg)
+            
+        if st.button("Play Next Scenario ➡️", use_container_width=True):
+            st.session_state.game_step = "generate"
+            st.rerun()
+
+
+# ==========================================
+# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER
+# ==========================================
+elif app_mode == "⚖️ Portfolio Optimizer":
+    st.title("⚖️ Mathematical Portfolio Optimizer")
+    st.write("This tool runs a Monte Carlo simulation on your currently owned assets to find the 'Efficient Frontier'.")
+    
+    tickers = st.session_state.portfolio['Ticker'].tolist()
+    
+    if len(tickers) < 2:
+        st.warning("⚠️ You need at least 2 different assets in your Live Portfolio to run the optimizer!")
+    else:
+        # Check if we have saved data
+        if st.session_state.optimizer:
+            st.info("💡 Showing your last saved simulation. Run a new simulation if you recently bought or sold assets.")
+            opt = st.session_state.optimizer
+            
+            st.header("🎯 Your Optimal Portfolio Targets")
+            col1, col2 = st.columns(2)
+            col1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
+            col2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
+            
+            st.subheader("Recommended Target Weights:")
+            for t, w in opt['weights'].items():
+                st.write(f"- **{t}**: {w*100:.2f}%")
+            st.divider()
+
+        if st.button("🚀 Run New Simulation (2,000 Portfolios)"):
+            with st.spinner("Downloading 1 year of historical data and crunching the math..."):
+                try:
+                    data = yf.download(tickers, period="1y", progress=False)['Close']
+                    daily_returns = data.pct_change().dropna()
+                    
+                    ann_returns = daily_returns.mean() * 252
+                    ann_cov = daily_returns.cov() * 252
+                    
+                    num_portfolios = 2000
+                    results = np.zeros((3, num_portfolios))
+                    weights_record = []
+                    
+                    for i in range(num_portfolios):
+                        weights = np.random.random(len(tickers))
+                        weights /= np.sum(weights)
+                        weights_record.append(weights)
+                        
+                        pref_return = np.sum(weights * ann_returns)
+                        pref_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
+                        
+                        results[0,i] = pref_std
+                        results[1,i] = pref_return
+                        results[2,i] = results[1,i] / results[0,i] 
+                    
+                    max_sharpe_idx = np.argmax(results[2])
+                    optimal_weights = weights_record[max_sharpe_idx]
+                    opt_return = results[1, max_sharpe_idx]
+                    opt_risk = results[0, max_sharpe_idx]
+                    
+                    # NEW: Save to memory and hard drive!
+                    weights_dict = {tickers[i]: float(optimal_weights[i]) for i in range(len(tickers))}
+                    st.session_state.optimizer = {
+                        "return": float(opt_return),
+                        "risk": float(opt_risk),
+                        "weights": weights_dict
+                    }
+                    save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
+                    
+                    st.success("Simulation Complete and Saved!")
+                    
+                    chart_data = pd.DataFrame({
+                        "Risk (Volatility)": results[0,:],
+                        "Expected Return": results[1,:]
+                    })
+                    st.scatter_chart(chart_data, x="Risk (Volatility)", y="Expected Return")
+                    
+                    st.header("🎯 The Mathematically Optimal Portfolio")
+                    col1, col2 = st.columns(2)
+                    col1.metric("Expected Annual Return", f"{opt_return*100:.2f}%")
+                    col2.metric("Annual Volatility (Risk)", f"{opt_risk*100:.2f}%")
+                    
+                    st.subheader("Recommended Target Weights:")
+                    for t, w in weights_dict.items():
+                        st.write(f"- **{t}**: {w*100:.2f}%")
+                        
+                except Exception as e:
+                    st.error(f"Could not calculate. Ensure you own valid tickers with enough historical data. Error: {e}")
