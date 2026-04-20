@@ -2,10 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import scipy.optimize as sco # NEW: The Calculus Engine!
 import json
 import os
 import random
-import datetime # NEW: For timestamping history
+import datetime
 
 st.set_page_config(page_title="Paper Trader Pro", layout="wide")
 
@@ -28,16 +29,12 @@ def load_data():
             df = pd.DataFrame(data.get("portfolio", []))
             if df.empty or "Ticker" not in df.columns:
                 df = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-            
-            # UPGRADED MEMORY: Handle the new list format
             opt_data = data.get("optimizer", [])
-            # Backward compatibility for V8.0 single-save format
             if isinstance(opt_data, dict) and opt_data:
                 opt_data["date"] = "Legacy Save"
                 opt_data = [opt_data]
             elif isinstance(opt_data, dict) and not opt_data:
                 opt_data = []
-                
             return data.get("cash", 10000000.00), df, opt_data
     else:
         return 10000000.00, pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"]), []
@@ -46,7 +43,7 @@ def save_data(cash, portfolio_df, opt_data):
     data = {
         "cash": cash, 
         "portfolio": portfolio_df.to_dict("records"),
-        "optimizer": opt_data # Now saving a list of history!
+        "optimizer": opt_data
     }
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
@@ -70,12 +67,11 @@ with st.sidebar:
     if st.button("🚨 Reset Live Account (₹1 Crore)"):
         st.session_state.cash = 10000000.00
         st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Shares", "Total Invested"])
-        st.session_state.optimizer = [] # Reset history to empty list
+        st.session_state.optimizer = [] 
         save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
         st.cache_data.clear()
         st.success("Account reset to ₹1 Crore!")
         st.rerun()
-
 
 # ==========================================
 # MODE 1: LIVE TRADING SIMULATOR
@@ -252,43 +248,39 @@ elif app_mode == "🎮 Market Replay Academy":
             st.session_state.game_step = "generate"
             st.rerun()
 
-
 # ==========================================
-# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (WITH HISTORY)
+# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (SCIPY UPGRADE)
 # ==========================================
 elif app_mode == "⚖️ Portfolio Optimizer":
-    st.title("⚖️ Mathematical Portfolio Optimizer")
-    st.write("Design your ideal portfolio. Find the perfect mathematical balance *before* you buy.")
+    st.title("⚖️ Mathematical Portfolio Optimizer (Quant Edition)")
+    st.write("Using SLSQP Calculus algorithms to find the exact mathematical peak of the Efficient Frontier.")
     
-    # --- NEW: HISTORY VAULT UI ---
+    # --- HISTORY VAULT ---
     if st.session_state.optimizer:
         with st.expander("📂 View Saved Simulation History", expanded=False):
-            # Create a dictionary to map a clean dropdown name to the actual data
             history_dict = {}
-            for sim in reversed(st.session_state.optimizer): # Show newest first
+            for sim in reversed(st.session_state.optimizer):
                 date_str = sim.get('date', 'Unknown Date')
                 tickers_str = ", ".join(sim['weights'].keys())
                 display_name = f"{date_str} | Assets: {tickers_str}"
                 history_dict[display_name] = sim
             
             selected_history = st.selectbox("Select a past run to view results:", list(history_dict.keys()))
-            
             if selected_history:
                 opt = history_dict[selected_history]
-                st.subheader("🎯 Saved Target Portfolio")
+                st.subheader("🎯 Exact Optimal Target")
                 hc1, hc2 = st.columns(2)
                 hc1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
                 hc2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
                 
-                st.write("**Recommended Target Weights:**")
+                st.write("**Exact Target Weights:**")
                 for t, w in opt['weights'].items():
                     st.write(f"- {t}: {w*100:.2f}%")
-    
     st.divider()
     
-    # --- RUN NEW SIMULATION UI ---
-    st.header("🔬 Run New Simulation")
-    owned_tickers = st.session_state.portfolio['Ticker'].tolist()
+    # --- RUN NEW OPTIMIZATION UI ---
+    st.header("🔬 Run Quant Optimization")
+    owned_tickers = st.session_state.portfolio['Ticker'].tolist() if "Ticker" in st.session_state.portfolio.columns else []
     default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, GOLD"
     
     user_input = st.text_input("Assets to Simulate (comma-separated):", value=default_str)
@@ -297,8 +289,8 @@ elif app_mode == "⚖️ Portfolio Optimizer":
     if len(tickers) < 2:
         st.warning("⚠️ You need at least 2 different assets to run an optimization simulation!")
     else:
-        if st.button("🚀 Run 2,000 Monte Carlo Simulations"):
-            with st.spinner("Downloading 1 year of historical data and crunching the math..."):
+        if st.button("🚀 Calculate Exact Mathematical Optimal"):
+            with st.spinner("Downloading data and running SLSQP Optimization..."):
                 try:
                     data = yf.download(tickers, period="1y", progress=False)['Close']
                     valid_tickers = data.columns.tolist() if isinstance(data, pd.DataFrame) else []
@@ -310,30 +302,47 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                         ann_returns = daily_returns.mean() * 252
                         ann_cov = daily_returns.cov() * 252
                         
-                        num_portfolios = 2000
-                        results = np.zeros((3, num_portfolios))
-                        weights_record = []
+                        # --- SCIPY OPTIMIZATION LOGIC ---
+                        num_assets = len(valid_tickers)
                         
-                        for i in range(num_portfolios):
-                            weights = np.random.random(len(valid_tickers))
-                            weights /= np.sum(weights)
-                            weights_record.append(weights)
+                        # 1. We need a function to MINIMIZE. Since we want MAX Sharpe, we minimize negative Sharpe.
+                        def portfolio_performance(weights):
+                            p_ret = np.sum(weights * ann_returns)
+                            p_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
+                            return p_ret, p_std
                             
-                            pref_return = np.sum(weights * ann_returns)
-                            pref_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
-                            
-                            results[0,i] = pref_std
-                            results[1,i] = pref_return
-                            results[2,i] = results[1,i] / results[0,i] 
+                        def neg_sharpe_ratio(weights):
+                            p_ret, p_std = portfolio_performance(weights)
+                            return -p_ret / p_std
                         
-                        max_sharpe_idx = np.argmax(results[2])
-                        optimal_weights = weights_record[max_sharpe_idx]
-                        opt_return = results[1, max_sharpe_idx]
-                        opt_risk = results[0, max_sharpe_idx]
+                        # 2. Constraints: All weights must equal exactly 1.0 (100%)
+                        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
                         
-                        # --- NEW: Append to History List ---
+                        # 3. Bounds: No single asset can be less than 0% or more than 100% (No shorting)
+                        bounds = tuple((0.0, 1.0) for asset in range(num_assets))
+                        
+                        # 4. Initial Guess: Spread it evenly to start
+                        init_guess = num_assets * [1. / num_assets,]
+                        
+                        # 5. EXECUTE THE HEAT-SEEKING MISSILE
+                        opt_result = sco.minimize(neg_sharpe_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+                        
+                        exact_weights = opt_result.x
+                        opt_return, opt_risk = portfolio_performance(exact_weights)
+                        
+                        # We will also generate 1,000 random dots just so the user can still see the visual cloud
+                        mc_returns = []
+                        mc_risks = []
+                        for _ in range(1000):
+                            w = np.random.random(num_assets)
+                            w /= np.sum(w)
+                            mc_ret, mc_std = portfolio_performance(w)
+                            mc_returns.append(mc_ret)
+                            mc_risks.append(mc_std)
+                        
+                        # Save the EXACT mathematically perfect result
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        weights_dict = {valid_tickers[i]: float(optimal_weights[i]) for i in range(len(valid_tickers))}
+                        weights_dict = {valid_tickers[i]: float(exact_weights[i]) for i in range(len(valid_tickers))}
                         
                         new_sim_record = {
                             "date": timestamp,
@@ -345,27 +354,27 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                         st.session_state.optimizer.append(new_sim_record)
                         save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
                         
-                        st.success("Simulation Complete and Saved to History Vault!")
+                        st.success("Optimization Solved and Saved to History Vault!")
                         
-                        # Draw the chart for the current run
+                        # Plot the visual context
                         chart_data = pd.DataFrame({
-                            "Risk (Volatility)": results[0,:],
-                            "Expected Return": results[1,:]
+                            "Risk (Volatility)": mc_risks,
+                            "Expected Return": mc_returns
                         })
                         st.scatter_chart(chart_data, x="Risk (Volatility)", y="Expected Return")
+                        st.caption("Background dots: Random portfolios. Your metrics below are the EXACT mathematical peak.")
                         
-                        st.header("🎯 The Mathematically Optimal Portfolio")
+                        st.header("🎯 The Mathematically Exact Portfolio")
                         col1, col2 = st.columns(2)
-                        col1.metric("Expected Annual Return", f"{opt_return*100:.2f}%")
-                        col2.metric("Annual Volatility (Risk)", f"{opt_risk*100:.2f}%")
+                        col1.metric("Exact Expected Annual Return", f"{opt_return*100:.4f}%")
+                        col2.metric("Exact Annual Volatility (Risk)", f"{opt_risk*100:.4f}%")
                         
-                        st.subheader("Recommended Target Weights:")
+                        st.subheader("Locked Target Weights:")
                         for t, w in weights_dict.items():
                             st.write(f"- **{t}**: {w*100:.2f}%")
                             
                 except Exception as e:
-                    st.error(f"Could not calculate. Ensure you own valid tickers with enough historical data. Error: {e}")
-
+                    st.error(f"Could not calculate. Error: {e}")
 
 # ==========================================
 # MODE 4: CYCLE & VALUE SCREENER
