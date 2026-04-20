@@ -2,10 +2,14 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import scipy.optimize as sco
 import json
 import os
 import datetime
+
+# --- NEW QUANT LIBRARIES ---
+from pypfopt import expected_returns, risk_models
+from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt.hierarchical_portfolio import HRPOpt
 
 st.set_page_config(page_title="Paper Trader Pro", layout="wide")
 
@@ -20,7 +24,6 @@ def get_live_price(ticker):
         return None
 
 DATA_FILE = "trading_data.json"
-RISK_FREE_RATE = 0.065 # 6.5% Baseline safe yield for unallocated cash
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -73,7 +76,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# MODE 1: LIVE TRADING SIMULATOR
+# MODE 1: LIVE TRADING SIMULATOR (Unchanged)
 # ==========================================
 if app_mode == "📈 Live Trading":
     st.title("📈 My Paper Trading Simulator")
@@ -168,11 +171,11 @@ if app_mode == "📈 Live Trading":
 
 
 # ==========================================
-# MODE 2: THE EFFICIENT FRONTIER OPTIMIZER
+# MODE 2: THE INSTITUTIONAL PORTFOLIO OPTIMIZER
 # ==========================================
 elif app_mode == "⚖️ Portfolio Optimizer":
-    st.title("⚖️ Portfolio Optimizer (Capped & Dynamic)")
-    st.write("Limits any single asset to **25%**. If the math determines your assets aren't worth the risk, it will leave gaps in your portfolio to hold safe cash instead.")
+    st.title("⚖️ Institutional Portfolio Optimizer")
+    st.write("Compare traditional Sharpe Optimization against Machine Learning (HRP) clustering to find your perfect balance.")
     
     # --- HISTORY VAULT ---
     if st.session_state.optimizer:
@@ -180,112 +183,119 @@ elif app_mode == "⚖️ Portfolio Optimizer":
             history_dict = {}
             for sim in reversed(st.session_state.optimizer):
                 date_str = sim.get('date', 'Unknown Date')
-                tickers_str = ", ".join([k for k in sim['weights'].keys() if k != "Unallocated Cash (Gap)"])
-                display_name = f"{date_str} | Assets: {tickers_str}"
+                model_type = sim.get('model', 'Legacy')
+                display_name = f"{date_str} | [{model_type}]"
                 history_dict[display_name] = sim
             
             selected_history = st.selectbox("Select a past run to view results:", list(history_dict.keys()))
             if selected_history:
                 opt = history_dict[selected_history]
-                st.subheader("🎯 Exact Optimal Target")
+                st.subheader(f"🎯 Saved Target: {opt.get('model', 'Optimization')}")
                 hc1, hc2 = st.columns(2)
                 hc1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
                 hc2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
                 
                 st.write("**Exact Target Weights:**")
                 for t, w in opt['weights'].items():
-                    if t == "Unallocated Cash (Gap)":
-                        st.error(f"- **{t}**: {w*100:.2f}% (Find more assets!)")
-                    else:
+                    if w > 0.001: # Only show assets with > 0.1% weight
                         st.write(f"- {t}: {w*100:.2f}%")
     st.divider()
     
     # --- RUN NEW OPTIMIZATION UI ---
     st.header("🔬 Run Optimization")
     owned_tickers = st.session_state.portfolio['Ticker'].tolist() if "Ticker" in st.session_state.portfolio.columns else []
-    default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, ETH-USD"
+    default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, GOLD"
     
     user_input = st.text_input("Assets to Simulate (comma-separated):", value=default_str)
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        opt_model = st.radio("Optimization Model:", [
+            "🏆 Max Return (Sharpe Ratio)", 
+            "🛡️ All-Weather (Machine Learning HRP)"
+        ], help="Sharpe tries to maximize pure profit based on past returns. HRP ignores past returns and clusters assets by risk to survive market crashes.")
+    
+    with col_b:
+        if "Sharpe" in opt_model:
+            cap_limit = st.slider("Max Allocation Cap per Asset", min_value=10, max_value=100, value=40, step=5)
+            max_weight = cap_limit / 100.0
+        else:
+            st.info("💡 HRP automatically manages concentration through risk clusters, so manual weight caps are not needed.")
+    
     tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
     
     if len(tickers) < 2:
         st.warning("⚠️ You need at least 2 different assets to run an optimization simulation!")
     else:
-        if st.button("🚀 Calculate Dynamic Optimal"):
-            with st.spinner("Downloading data and running constrained Optimization..."):
+        if st.button("🚀 Calculate Institutional Portfolio"):
+            with st.spinner("Downloading data and running Institutional Models..."):
                 try:
-                    data = yf.download(tickers, period="1y", progress=False)['Close']
-                    valid_tickers = data.columns.tolist() if isinstance(data, pd.DataFrame) else []
+                    data = yf.download(tickers, period="2y", progress=False)['Close']
                     
-                    if len(valid_tickers) < 2:
-                        st.error("Not enough valid tickers found. Please check your spelling and try again.")
+                    if len(data.columns) < 2:
+                        st.error("Not enough valid tickers found.")
                     else:
-                        daily_returns = data.pct_change().dropna()
-                        ann_returns = daily_returns.mean() * 252
-                        ann_cov = daily_returns.cov() * 252
-                        num_assets = len(valid_tickers)
+                        # 1. Clean data using Ledoit-Wolf Shrinkage (The Pro Fix!)
+                        S = risk_models.CovarianceShrinkage(data).ledoit_wolf()
                         
-                        # --- THE NEW GAP CALCULUS ---
-                        def portfolio_performance(weights):
-                            risky_return = np.sum(weights * ann_returns)
-                            cash_weight = max(0, 1.0 - np.sum(weights)) # The "Gap"
-                            total_return = risky_return + (cash_weight * RISK_FREE_RATE)
-                            total_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
-                            return total_return, total_std, cash_weight
+                        if "Sharpe" in opt_model:
+                            # --- TRADITIONAL SHARPE MODEL ---
+                            mu = expected_returns.mean_historical_return(data)
+                            ef = EfficientFrontier(mu, S, weight_bounds=(0.0, max_weight))
                             
-                        def neg_sharpe_ratio(weights):
-                            p_ret, p_std, _ = portfolio_performance(weights)
-                            if p_std == 0: return 0
-                            return -(p_ret - RISK_FREE_RATE) / max(p_std, 1e-8)
-                        
-                        # Constraint: Sum of weights must be LESS THAN OR EQUAL to 1.0
-                        constraints = ({'type': 'ineq', 'fun': lambda x: 1.0 - np.sum(x)})
-                        
-                        # Bounds: 0% minimum, 25% maximum per asset
-                        bounds = tuple((0.0, 0.25) for asset in range(num_assets))
-                        init_guess = num_assets * [0.99 / num_assets,]
-                        
-                        opt_result = sco.minimize(neg_sharpe_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
-                        
-                        exact_weights = opt_result.x
-                        opt_return, opt_risk, cash_gap = portfolio_performance(exact_weights)
-                        
+                            # Calculate the weights!
+                            raw_weights = ef.max_sharpe()
+                            cleaned_weights = ef.clean_weights()
+                            
+                            # Get performance
+                            opt_return, opt_risk, _ = ef.portfolio_performance()
+                            final_model_name = "Sharpe Ratio (Max Return)"
+                            
+                        else:
+                            # --- MACHINE LEARNING HRP MODEL ---
+                            returns = data.pct_change().dropna()
+                            hrp = HRPOpt(returns, S)
+                            
+                            # Calculate the weights using clustering!
+                            raw_weights = hrp.optimize()
+                            cleaned_weights = hrp.clean_weights()
+                            
+                            # Get performance
+                            opt_return, opt_risk, _ = hrp.portfolio_performance()
+                            final_model_name = "HRP (All-Weather Risk Parity)"
+
+                        # Save to memory
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        weights_dict = {valid_tickers[i]: float(exact_weights[i]) for i in range(len(valid_tickers))}
-                        
-                        # Add the cash gap to the display dictionary if it's significant
-                        if cash_gap > 0.001:
-                            weights_dict["Unallocated Cash (Gap)"] = float(cash_gap)
                         
                         new_sim_record = {
                             "date": timestamp,
+                            "model": final_model_name,
                             "return": float(opt_return),
                             "risk": float(opt_risk),
-                            "weights": weights_dict
+                            "weights": dict(cleaned_weights)
                         }
                         
                         st.session_state.optimizer.append(new_sim_record)
                         save_data(st.session_state.cash, st.session_state.portfolio, st.session_state.optimizer)
                         
-                        st.success("Optimization Solved and Saved to History Vault!")
+                        st.success(f"Successfully calculated using {final_model_name}!")
                         
                         st.header("🎯 The Mathematically Exact Portfolio")
                         col1, col2 = st.columns(2)
-                        col1.metric("Exact Expected Annual Return", f"{opt_return*100:.4f}%")
-                        col2.metric("Exact Annual Volatility (Risk)", f"{opt_risk*100:.4f}%")
+                        col1.metric("Expected Annual Return", f"{opt_return*100:.2f}%")
+                        col2.metric("Annual Volatility (Risk)", f"{opt_risk*100:.2f}%")
                         
-                        st.subheader("Locked Target Weights (Max 25% Limit):")
-                        for t, w in weights_dict.items():
-                            if t == "Unallocated Cash (Gap)":
-                                st.error(f"- **{t}**: {w*100:.2f}% (These assets are too risky/weak to hit 100%. Add better assets!)")
-                            else:
+                        st.subheader("Locked Target Weights:")
+                        for t, w in cleaned_weights.items():
+                            if w > 0.001: # Filter out zeros
                                 st.write(f"- **{t}**: {w*100:.2f}%")
                             
                 except Exception as e:
-                    st.error(f"Could not calculate. Error: {e}")
+                    st.error(f"Could not calculate. Ensure you own valid tickers with enough historical data. Error: {e}")
+
 
 # ==========================================
-# MODE 3: CYCLE & VALUE SCREENER
+# MODE 3: CYCLE & VALUE SCREENER (Unchanged)
 # ==========================================
 elif app_mode == "🔮 Cycle & Value Screener":
     st.title("🔮 Cycle & Value Screener")
