@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import scipy.optimize as sco # NEW: The Calculus Engine!
+import scipy.optimize as sco
 import json
 import os
 import random
@@ -32,6 +32,7 @@ def load_data():
             opt_data = data.get("optimizer", [])
             if isinstance(opt_data, dict) and opt_data:
                 opt_data["date"] = "Legacy Save"
+                opt_data["timeframe"] = "1y" # Backwards compatibility
                 opt_data = [opt_data]
             elif isinstance(opt_data, dict) and not opt_data:
                 opt_data = []
@@ -248,12 +249,13 @@ elif app_mode == "🎮 Market Replay Academy":
             st.session_state.game_step = "generate"
             st.rerun()
 
+
 # ==========================================
-# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (SCIPY UPGRADE)
+# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (WITH TIMEFRAMES)
 # ==========================================
 elif app_mode == "⚖️ Portfolio Optimizer":
-    st.title("⚖️ Mathematical Portfolio Optimizer (Quant Edition)")
-    st.write("Using SLSQP Calculus algorithms to find the exact mathematical peak of the Efficient Frontier.")
+    st.title("⚖️ Multi-Cycle Portfolio Optimizer")
+    st.write("Using SLSQP Calculus to find the exact mathematical peak of the Efficient Frontier across different market cycles.")
     
     # --- HISTORY VAULT ---
     if st.session_state.optimizer:
@@ -261,14 +263,15 @@ elif app_mode == "⚖️ Portfolio Optimizer":
             history_dict = {}
             for sim in reversed(st.session_state.optimizer):
                 date_str = sim.get('date', 'Unknown Date')
+                period_str = sim.get('timeframe', '1y')
                 tickers_str = ", ".join(sim['weights'].keys())
-                display_name = f"{date_str} | Assets: {tickers_str}"
+                display_name = f"{date_str} [{period_str}] | Assets: {tickers_str}"
                 history_dict[display_name] = sim
             
             selected_history = st.selectbox("Select a past run to view results:", list(history_dict.keys()))
             if selected_history:
                 opt = history_dict[selected_history]
-                st.subheader("🎯 Exact Optimal Target")
+                st.subheader(f"🎯 Target Portfolio (Based on {opt.get('timeframe', '1y')} of data)")
                 hc1, hc2 = st.columns(2)
                 hc1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
                 hc2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
@@ -280,6 +283,12 @@ elif app_mode == "⚖️ Portfolio Optimizer":
     
     # --- RUN NEW OPTIMIZATION UI ---
     st.header("🔬 Run Quant Optimization")
+    
+    # NEW: Timeframe Selection
+    timeframe_options = {"1 Year": "1y", "2 Years": "2y", "3 Years": "3y", "5 Years": "5y", "10 Years": "10y", "Max History": "max"}
+    selected_tf_label = st.selectbox("Historical Timeframe to Analyze:", list(timeframe_options.keys()), index=0)
+    selected_tf_value = timeframe_options[selected_tf_label]
+    
     owned_tickers = st.session_state.portfolio['Ticker'].tolist() if "Ticker" in st.session_state.portfolio.columns else []
     default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, GOLD"
     
@@ -289,23 +298,28 @@ elif app_mode == "⚖️ Portfolio Optimizer":
     if len(tickers) < 2:
         st.warning("⚠️ You need at least 2 different assets to run an optimization simulation!")
     else:
-        if st.button("🚀 Calculate Exact Mathematical Optimal"):
-            with st.spinner("Downloading data and running SLSQP Optimization..."):
+        if st.button(f"🚀 Calculate Exact Optimal (Based on {selected_tf_label})"):
+            with st.spinner(f"Downloading {selected_tf_label} of data and running SLSQP Optimization..."):
                 try:
-                    data = yf.download(tickers, period="1y", progress=False)['Close']
+                    # Download data based on selected timeframe
+                    data = yf.download(tickers, period=selected_tf_value, progress=False)['Close']
                     valid_tickers = data.columns.tolist() if isinstance(data, pd.DataFrame) else []
                     
                     if len(valid_tickers) < 2:
                         st.error("Not enough valid tickers found. Please check your spelling and try again.")
                     else:
+                        # CRITICAL: We must drop NA values. If you ask for 5 years, but a coin is only 2 years old, 
+                        # the math can only analyze the overlapping 2 years where all assets existed.
                         daily_returns = data.pct_change().dropna()
+                        
+                        actual_days_analyzed = len(daily_returns)
+                        st.info(f"📊 Analyzed {actual_days_analyzed} overlapping trading days for these assets.")
+                        
                         ann_returns = daily_returns.mean() * 252
                         ann_cov = daily_returns.cov() * 252
                         
-                        # --- SCIPY OPTIMIZATION LOGIC ---
                         num_assets = len(valid_tickers)
                         
-                        # 1. We need a function to MINIMIZE. Since we want MAX Sharpe, we minimize negative Sharpe.
                         def portfolio_performance(weights):
                             p_ret = np.sum(weights * ann_returns)
                             p_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
@@ -315,22 +329,15 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                             p_ret, p_std = portfolio_performance(weights)
                             return -p_ret / p_std
                         
-                        # 2. Constraints: All weights must equal exactly 1.0 (100%)
                         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-                        
-                        # 3. Bounds: No single asset can be less than 0% or more than 100% (No shorting)
                         bounds = tuple((0.0, 1.0) for asset in range(num_assets))
-                        
-                        # 4. Initial Guess: Spread it evenly to start
                         init_guess = num_assets * [1. / num_assets,]
                         
-                        # 5. EXECUTE THE HEAT-SEEKING MISSILE
                         opt_result = sco.minimize(neg_sharpe_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
                         
                         exact_weights = opt_result.x
                         opt_return, opt_risk = portfolio_performance(exact_weights)
                         
-                        # We will also generate 1,000 random dots just so the user can still see the visual cloud
                         mc_returns = []
                         mc_risks = []
                         for _ in range(1000):
@@ -340,12 +347,12 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                             mc_returns.append(mc_ret)
                             mc_risks.append(mc_std)
                         
-                        # Save the EXACT mathematically perfect result
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         weights_dict = {valid_tickers[i]: float(exact_weights[i]) for i in range(len(valid_tickers))}
                         
                         new_sim_record = {
                             "date": timestamp,
+                            "timeframe": selected_tf_value, # NEW: Save the timeframe used
                             "return": float(opt_return),
                             "risk": float(opt_risk),
                             "weights": weights_dict
@@ -356,13 +363,12 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                         
                         st.success("Optimization Solved and Saved to History Vault!")
                         
-                        # Plot the visual context
                         chart_data = pd.DataFrame({
                             "Risk (Volatility)": mc_risks,
                             "Expected Return": mc_returns
                         })
                         st.scatter_chart(chart_data, x="Risk (Volatility)", y="Expected Return")
-                        st.caption("Background dots: Random portfolios. Your metrics below are the EXACT mathematical peak.")
+                        st.caption(f"Background dots: Random portfolios. Your metrics below are the EXACT mathematical peak over {selected_tf_label}.")
                         
                         st.header("🎯 The Mathematically Exact Portfolio")
                         col1, col2 = st.columns(2)
