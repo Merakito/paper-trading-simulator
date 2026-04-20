@@ -5,7 +5,6 @@ import numpy as np
 import scipy.optimize as sco
 import json
 import os
-import random
 import datetime
 
 st.set_page_config(page_title="Paper Trader Pro", layout="wide")
@@ -21,6 +20,7 @@ def get_live_price(ticker):
         return None
 
 DATA_FILE = "trading_data.json"
+RISK_FREE_RATE = 0.065 # 6.5% Baseline safe yield for unallocated cash
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -32,7 +32,6 @@ def load_data():
             opt_data = data.get("optimizer", [])
             if isinstance(opt_data, dict) and opt_data:
                 opt_data["date"] = "Legacy Save"
-                opt_data["timeframe"] = "1y" # Backwards compatibility
                 opt_data = [opt_data]
             elif isinstance(opt_data, dict) and not opt_data:
                 opt_data = []
@@ -58,7 +57,6 @@ with st.sidebar:
     st.title("Navigation")
     app_mode = st.radio("Choose Mode:", [
         "📈 Live Trading", 
-        "🎮 Market Replay Academy", 
         "⚖️ Portfolio Optimizer",
         "🔮 Cycle & Value Screener"
     ])
@@ -170,92 +168,11 @@ if app_mode == "📈 Live Trading":
 
 
 # ==========================================
-# MODE 2: MARKET REPLAY ACADEMY
-# ==========================================
-elif app_mode == "🎮 Market Replay Academy":
-    st.title("🎮 Market Replay Academy")
-    st.write("Test your pattern recognition. I'll show you the past; you predict the future.")
-    
-    if "game_step" not in st.session_state:
-        st.session_state.game_step = "generate" 
-        st.session_state.score = 0
-        st.session_state.streak = 0
-
-    def generate_scenario():
-        tickers = ["BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "RELIANCE.NS", "TATASTEEL.NS"]
-        ticker = random.choice(tickers)
-        year = random.randint(2018, 2023)
-        month = random.randint(1, 10)
-        start_date = f"{year}-{month:02d}-01"
-        end_date = f"{year}-{month+2:02d}-28"
-        
-        try:
-            hist = yf.Ticker(ticker).history(start=start_date, end=end_date)
-            if len(hist) > 50:
-                closes = hist['Close']
-                split = int(len(closes) * 0.7)
-                st.session_state.g_visible = closes.iloc[:split]
-                st.session_state.g_hidden = closes.iloc[split:]
-                st.session_state.g_full = closes
-                st.session_state.g_ticker = ticker
-                st.session_state.game_step = "guessing"
-            else:
-                generate_scenario()
-        except:
-            generate_scenario()
-
-    def check_guess(guess):
-        start_price = st.session_state.g_visible.iloc[-1]
-        end_price = st.session_state.g_hidden.iloc[-1]
-        went_up = end_price > start_price
-        
-        if (guess == "UP" and went_up) or (guess == "DOWN" and not went_up):
-            st.session_state.score += 500
-            st.session_state.streak += 1
-            st.session_state.g_result_msg = f"✅ **CORRECT!** The price went from {start_price:.2f} to {end_price:.2f}."
-        else:
-            st.session_state.score -= 250
-            st.session_state.streak = 0
-            st.session_state.g_result_msg = f"❌ **WRONG!** The price went from {start_price:.2f} to {end_price:.2f}."
-        
-        st.session_state.game_step = "revealed"
-        st.rerun()
-
-    g_col1, g_col2 = st.columns(2)
-    g_col1.metric("Academy Score", st.session_state.score)
-    g_col2.metric("Winning Streak", f"{st.session_state.streak} 🔥")
-    st.divider()
-
-    if st.session_state.game_step == "generate":
-        with st.spinner("Finding a random historical setup..."):
-            generate_scenario()
-            st.rerun()
-
-    elif st.session_state.game_step == "guessing":
-        st.subheader("Asset: Hidden")
-        st.line_chart(st.session_state.g_visible)
-        
-        col_up, col_down = st.columns(2)
-        if col_up.button("📈 PREDICT: BREAKOUT (UP)", use_container_width=True): check_guess("UP")
-        if col_down.button("📉 PREDICT: CRASH (DOWN)", use_container_width=True): check_guess("DOWN")
-
-    elif st.session_state.game_step == "revealed":
-        st.subheader(f"Asset Revealed: {st.session_state.g_ticker}")
-        st.line_chart(st.session_state.g_full)
-        if "CORRECT" in st.session_state.g_result_msg: st.success(st.session_state.g_result_msg)
-        else: st.error(st.session_state.g_result_msg)
-            
-        if st.button("Play Next Scenario ➡️", use_container_width=True):
-            st.session_state.game_step = "generate"
-            st.rerun()
-
-
-# ==========================================
-# MODE 3: THE EFFICIENT FRONTIER OPTIMIZER (WITH TIMEFRAMES)
+# MODE 2: THE EFFICIENT FRONTIER OPTIMIZER
 # ==========================================
 elif app_mode == "⚖️ Portfolio Optimizer":
-    st.title("⚖️ Multi-Cycle Portfolio Optimizer")
-    st.write("Using SLSQP Calculus to find the exact mathematical peak of the Efficient Frontier across different market cycles.")
+    st.title("⚖️ Portfolio Optimizer (Capped & Dynamic)")
+    st.write("Limits any single asset to **25%**. If the math determines your assets aren't worth the risk, it will leave gaps in your portfolio to hold safe cash instead.")
     
     # --- HISTORY VAULT ---
     if st.session_state.optimizer:
@@ -263,34 +180,30 @@ elif app_mode == "⚖️ Portfolio Optimizer":
             history_dict = {}
             for sim in reversed(st.session_state.optimizer):
                 date_str = sim.get('date', 'Unknown Date')
-                period_str = sim.get('timeframe', '1y')
-                tickers_str = ", ".join(sim['weights'].keys())
-                display_name = f"{date_str} [{period_str}] | Assets: {tickers_str}"
+                tickers_str = ", ".join([k for k in sim['weights'].keys() if k != "Unallocated Cash (Gap)"])
+                display_name = f"{date_str} | Assets: {tickers_str}"
                 history_dict[display_name] = sim
             
             selected_history = st.selectbox("Select a past run to view results:", list(history_dict.keys()))
             if selected_history:
                 opt = history_dict[selected_history]
-                st.subheader(f"🎯 Target Portfolio (Based on {opt.get('timeframe', '1y')} of data)")
+                st.subheader("🎯 Exact Optimal Target")
                 hc1, hc2 = st.columns(2)
                 hc1.metric("Expected Annual Return", f"{opt['return']*100:.2f}%")
                 hc2.metric("Annual Volatility (Risk)", f"{opt['risk']*100:.2f}%")
                 
                 st.write("**Exact Target Weights:**")
                 for t, w in opt['weights'].items():
-                    st.write(f"- {t}: {w*100:.2f}%")
+                    if t == "Unallocated Cash (Gap)":
+                        st.error(f"- **{t}**: {w*100:.2f}% (Find more assets!)")
+                    else:
+                        st.write(f"- {t}: {w*100:.2f}%")
     st.divider()
     
     # --- RUN NEW OPTIMIZATION UI ---
-    st.header("🔬 Run Quant Optimization")
-    
-    # NEW: Timeframe Selection
-    timeframe_options = {"1 Year": "1y", "2 Years": "2y", "3 Years": "3y", "5 Years": "5y", "10 Years": "10y", "Max History": "max"}
-    selected_tf_label = st.selectbox("Historical Timeframe to Analyze:", list(timeframe_options.keys()), index=0)
-    selected_tf_value = timeframe_options[selected_tf_label]
-    
+    st.header("🔬 Run Optimization")
     owned_tickers = st.session_state.portfolio['Ticker'].tolist() if "Ticker" in st.session_state.portfolio.columns else []
-    default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, GOLD"
+    default_str = ", ".join(owned_tickers) if owned_tickers else "RELIANCE.NS, TCS.NS, BTC-USD, ETH-USD"
     
     user_input = st.text_input("Assets to Simulate (comma-separated):", value=default_str)
     tickers = [t.strip().upper() for t in user_input.split(",") if t.strip()]
@@ -298,61 +211,54 @@ elif app_mode == "⚖️ Portfolio Optimizer":
     if len(tickers) < 2:
         st.warning("⚠️ You need at least 2 different assets to run an optimization simulation!")
     else:
-        if st.button(f"🚀 Calculate Exact Optimal (Based on {selected_tf_label})"):
-            with st.spinner(f"Downloading {selected_tf_label} of data and running SLSQP Optimization..."):
+        if st.button("🚀 Calculate Dynamic Optimal"):
+            with st.spinner("Downloading data and running constrained Optimization..."):
                 try:
-                    # Download data based on selected timeframe
-                    data = yf.download(tickers, period=selected_tf_value, progress=False)['Close']
+                    data = yf.download(tickers, period="1y", progress=False)['Close']
                     valid_tickers = data.columns.tolist() if isinstance(data, pd.DataFrame) else []
                     
                     if len(valid_tickers) < 2:
                         st.error("Not enough valid tickers found. Please check your spelling and try again.")
                     else:
-                        # CRITICAL: We must drop NA values. If you ask for 5 years, but a coin is only 2 years old, 
-                        # the math can only analyze the overlapping 2 years where all assets existed.
                         daily_returns = data.pct_change().dropna()
-                        
-                        actual_days_analyzed = len(daily_returns)
-                        st.info(f"📊 Analyzed {actual_days_analyzed} overlapping trading days for these assets.")
-                        
                         ann_returns = daily_returns.mean() * 252
                         ann_cov = daily_returns.cov() * 252
-                        
                         num_assets = len(valid_tickers)
                         
+                        # --- THE NEW GAP CALCULUS ---
                         def portfolio_performance(weights):
-                            p_ret = np.sum(weights * ann_returns)
-                            p_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
-                            return p_ret, p_std
+                            risky_return = np.sum(weights * ann_returns)
+                            cash_weight = max(0, 1.0 - np.sum(weights)) # The "Gap"
+                            total_return = risky_return + (cash_weight * RISK_FREE_RATE)
+                            total_std = np.sqrt(np.dot(weights.T, np.dot(ann_cov, weights)))
+                            return total_return, total_std, cash_weight
                             
                         def neg_sharpe_ratio(weights):
-                            p_ret, p_std = portfolio_performance(weights)
-                            return -p_ret / p_std
+                            p_ret, p_std, _ = portfolio_performance(weights)
+                            if p_std == 0: return 0
+                            return -(p_ret - RISK_FREE_RATE) / max(p_std, 1e-8)
                         
-                        constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-                        bounds = tuple((0.0, 1.0) for asset in range(num_assets))
-                        init_guess = num_assets * [1. / num_assets,]
+                        # Constraint: Sum of weights must be LESS THAN OR EQUAL to 1.0
+                        constraints = ({'type': 'ineq', 'fun': lambda x: 1.0 - np.sum(x)})
+                        
+                        # Bounds: 0% minimum, 25% maximum per asset
+                        bounds = tuple((0.0, 0.25) for asset in range(num_assets))
+                        init_guess = num_assets * [0.99 / num_assets,]
                         
                         opt_result = sco.minimize(neg_sharpe_ratio, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
                         
                         exact_weights = opt_result.x
-                        opt_return, opt_risk = portfolio_performance(exact_weights)
-                        
-                        mc_returns = []
-                        mc_risks = []
-                        for _ in range(1000):
-                            w = np.random.random(num_assets)
-                            w /= np.sum(w)
-                            mc_ret, mc_std = portfolio_performance(w)
-                            mc_returns.append(mc_ret)
-                            mc_risks.append(mc_std)
+                        opt_return, opt_risk, cash_gap = portfolio_performance(exact_weights)
                         
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         weights_dict = {valid_tickers[i]: float(exact_weights[i]) for i in range(len(valid_tickers))}
                         
+                        # Add the cash gap to the display dictionary if it's significant
+                        if cash_gap > 0.001:
+                            weights_dict["Unallocated Cash (Gap)"] = float(cash_gap)
+                        
                         new_sim_record = {
                             "date": timestamp,
-                            "timeframe": selected_tf_value, # NEW: Save the timeframe used
                             "return": float(opt_return),
                             "risk": float(opt_risk),
                             "weights": weights_dict
@@ -363,27 +269,23 @@ elif app_mode == "⚖️ Portfolio Optimizer":
                         
                         st.success("Optimization Solved and Saved to History Vault!")
                         
-                        chart_data = pd.DataFrame({
-                            "Risk (Volatility)": mc_risks,
-                            "Expected Return": mc_returns
-                        })
-                        st.scatter_chart(chart_data, x="Risk (Volatility)", y="Expected Return")
-                        st.caption(f"Background dots: Random portfolios. Your metrics below are the EXACT mathematical peak over {selected_tf_label}.")
-                        
                         st.header("🎯 The Mathematically Exact Portfolio")
                         col1, col2 = st.columns(2)
                         col1.metric("Exact Expected Annual Return", f"{opt_return*100:.4f}%")
                         col2.metric("Exact Annual Volatility (Risk)", f"{opt_risk*100:.4f}%")
                         
-                        st.subheader("Locked Target Weights:")
+                        st.subheader("Locked Target Weights (Max 25% Limit):")
                         for t, w in weights_dict.items():
-                            st.write(f"- **{t}**: {w*100:.2f}%")
+                            if t == "Unallocated Cash (Gap)":
+                                st.error(f"- **{t}**: {w*100:.2f}% (These assets are too risky/weak to hit 100%. Add better assets!)")
+                            else:
+                                st.write(f"- **{t}**: {w*100:.2f}%")
                             
                 except Exception as e:
                     st.error(f"Could not calculate. Error: {e}")
 
 # ==========================================
-# MODE 4: CYCLE & VALUE SCREENER
+# MODE 3: CYCLE & VALUE SCREENER
 # ==========================================
 elif app_mode == "🔮 Cycle & Value Screener":
     st.title("🔮 Cycle & Value Screener")
